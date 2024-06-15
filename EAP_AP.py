@@ -1,7 +1,16 @@
 import sys
-# import socket
 import threading, time
+# import socket
+import binascii, hashlib
 from scapy.all import *
+from cryptography.hazmat.primitives.asymmetric import ec 
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+from Crypto.Cipher import AES
+from Crypto.Util.Padding import pad, unpad
+from py_ecc.optimized_bls12_381 import G1, G2, Z1, Z2, add, multiply, pairing, neg, FQ12
+from py_ecc.bls import G2ProofOfPossession as bls
 
 def decode_payload(pkt):
     return {i.split(':')[0].strip():i.split(':')[1].strip() for i in [p.strip() for p in pkt[Raw].load.decode('utf-8').split('|')]}
@@ -71,7 +80,7 @@ class EAP_AP():
             sniff(prn=self.wait_for_eap_tls,
                   filter=f"ether dst host ff:ff:ff:ff:ff:ff and port {self.usage['port']}",
                   iface="lo",
-                  timeout=1, # timer
+                  timeout=5, # timer
                   count=1)
         self.target_sta['wait_for'] = True
 
@@ -186,9 +195,54 @@ class EAP_AP():
                 sys.exit(1)
 
     def eap_tls(self):
-        # ...
-        print("AP Ready for EAP_TLS ...", '\n')
+        print(f"<<< AP Ready for EAP_TLS with STA(ssid:{self.target_sta['SSID']}) >>>", '\n')
+
+        ##### HandShake #####
+        # (Generate ephemeral key pair for ECDHE)
+        private_key = ec.generate_private_key(ec.SECP384R1()) # NIST P-384
+        public_key = private_key.public_key()
+        public_bytes = public_key.public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo)
+
+        # (Generate BLS key pair for signing)
+        bls_private_key = bls.KeyGen(b"seed")
+        bls_public_key = bls.SkToPk(bls_private_key) # Secret Key to Public Key
+
+        # (Sign the ECDHE public key with BLS)
+        signature = bls.Sign(bls_private_key, public_bytes)
+
+        # (Encrypt the payload using HMAC-based Extract-and-Expand Key Derivation Function)
+        shared_key = private_key.exchange(ec.ECDH(), public_key)
+        aes_key = HKDF(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=None,
+            info=b'handshake data',
+        ).derive(shared_key)
+        cipher = AES.new(aes_key, AES.MODE_CBC) # AES-Cipher Block Chaining
+        encrypted_data = cipher.encrypt(pad(public_bytes + signature, AES.block_size))
+        self.send_handshake_data(cipher, encrypted_data, bls_public_key)
+        # loop????????????????????????????????????????????????????????????????????????
+
+        ### -- ###
         pass
+
+    def send_handshake_data(self, cip, enc, pbk, cer:str = "HandShake-Certificate"): # cipher, encrypt
+        iv = binascii.hexlify(cip.iv).decode() # Initialization Vector
+        encrypted_payload = binascii.hexlify(enc).decode()
+        
+        packet = Ether(dst="ff:ff:ff:ff:ff:ff") /\
+                 IP(dst="255.255.255.255") /\
+                 UDP(dport=self.usage['dst_port'], sport=self.usage['port']) /\
+                 Raw(load=" | ".join([f"frame_type: {self.security}",
+                                      f"dst: {self.target_sta['addr']}",
+                                      f"code: HandShake",
+                                      f"message: ServerHello",
+                                      f"iv: {iv}",
+                                      f"pbk: {binascii.hexlify(pbk).decode()}",
+                                      f"tls_data: {encrypted_payload}"]))
+        sendp(packet, iface="lo", verbose=False)
+        print(f"AP(seq:{self.usage['seq_num']}): EAP-HandShake > {self.target_sta['SSID']}", '\n')
+        self.usage['seq_num'] += 1
 
 
 if __name__ == '__main__':

@@ -1,5 +1,6 @@
 import sys
 # import socket
+# import binascii
 from scapy.all import *
 
 def decode_payload(pkt):
@@ -129,7 +130,7 @@ class EAP_STA():
                 payload = decode_payload(pkt)
                 if payload.get('AP_SSID', '') == self.target_ap['SSID'] and \
                    payload.get('dst', '') == get_if_addr(conf.iface) and \
-                   payload.get('frame_type', '') == 'Response' and int(payload.get('response')) and \
+                   payload.get('frame_type', '') == 'Response' and int(payload.get('response', '0')) and \
                    self.target_ap['seq_num'] != payload['seq_num']:
                     print(f"Received Authentication Response: {payload}", '\n')
                     self.target_ap['wait_for'] = False
@@ -167,20 +168,22 @@ class EAP_STA():
                 sys.exit(1)
 
     def eap_tls(self):
-        print(f'Start EAP-TLS with AP(ssid:{self.target_ap["SSID"]})', '\n')
+        print(f'<<< Start EAP-TLS with AP(ssid:{self.target_ap["SSID"]}) >>>', '\n')
         
         # EAP-Start
         packet = Ether(dst="ff:ff:ff:ff:ff:ff") /\
                  IP(dst="255.255.255.255") /\
                  TCP(dport=self.usage['dst_port'], sport=self.usage['port']) /\
                  Raw(load=" | ".join([f"frame_type: {self.security}",
-                                      f"code: START"]+
+                                      f"code: START",
+                                      f"message: ClientHello"]+
                                       [f"{k}: {self.usage[k]}" for k in self.usage]))
         sendp(packet, iface="lo", verbose=False)
         print(f"STA send EAPOL-START(seq:{self.usage['seq_num']}):", packet, '\n')
         self.usage['seq_num'] += 1
 
-        # ...
+        ##### HandShake #####
+
 
 if __name__ == '__main__':
     # Wifi-STA simulation on loopback interface
