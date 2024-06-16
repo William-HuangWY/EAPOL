@@ -204,7 +204,7 @@ class EAP_AP():
         public_bytes = public_key.public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo)
 
         # (Generate BLS key pair for signing)
-        bls_private_key = bls.KeyGen(b"seed")
+        bls_private_key = bls.KeyGen(os.urandom(16))
         bls_public_key = bls.SkToPk(bls_private_key) # Secret Key to Public Key
 
         # (Sign the ECDHE public key with BLS)
@@ -221,7 +221,6 @@ class EAP_AP():
         cipher = AES.new(aes_key, AES.MODE_CBC) # AES-Cipher Block Chaining
         encrypted_data = cipher.encrypt(pad(public_bytes + signature, AES.block_size))
         self.send_handshake_data(cipher, encrypted_data, bls_public_key)
-        # loop????????????????????????????????????????????????????????????????????????
 
         ### -- ###
         pass

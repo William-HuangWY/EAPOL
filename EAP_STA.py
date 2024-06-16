@@ -183,6 +183,65 @@ class EAP_STA():
         self.usage['seq_num'] += 1
 
         ##### HandShake #####
+        # Receive HandShake Data
+        pkt = sniff(filter=f"ether dst host ff:ff:ff:ff:ff:ff and port {self.usage['port']}", count=1)[0]
+
+        if pkt.haslayer(Raw):
+            try:
+                payload = decode_payload(pkt)
+                if payload.get('frame_type', '') == 'EAP-TLS' and \
+                payload.get('code', '') == 'HandShake' and \
+                payload.get('message', '') == 'ServerHello':
+                    
+                    print(f"Received HandShake Data: {payload}", '\n')
+                    
+                    # Convert received data from hex
+                    iv = binascii.unhexlify(payload['iv'])
+                    bls_public_key = binascii.unhexlify(payload['pbk'])
+                    encrypted_payload = binascii.unhexlify(payload['tls_data'])
+
+                    # Generate ECDHE key pair
+                    sta_private_key = ec.generate_private_key(ec.SECP384R1(), default_backend())
+                    sta_public_key = sta_private_key.public_key()
+
+                    # Load AP's ECDHE public key from received data
+                    ap_public_key = ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP384R1(), bls_public_key)
+
+                    # Generate the shared key using the received ECDHE public key
+                    shared_key = sta_private_key.exchange(ec.ECDH(), ap_public_key)
+
+                    # Derive AES key from the shared key
+                    aes_key = HKDF(
+                        algorithm=hashes.SHA256(),
+                        length=32,
+                        salt=None,
+                        info=b'handshake data',
+                    ).derive(shared_key)
+
+                    # Decrypt the payload
+                    cipher = Cipher(algorithms.AES(aes_key), modes.CBC(iv), backend=default_backend())
+                    decryptor = cipher.decryptor()
+                    decrypted_data = decryptor.update(encrypted_payload) + decryptor.finalize()
+
+                    # Remove padding
+                    unpadder = padding.PKCS7(algorithms.AES.block_size).unpadder()
+                    decrypted_data = unpadder.update(decrypted_data) + unpadder.finalize()
+
+                    # Extract the ECDHE public key and the signature
+                    public_key_len = len(decrypted_data) - 96  # BLS signature size is 96 bytes
+                    received_public_key = decrypted_data[:public_key_len]
+                    received_signature = decrypted_data[public_key_len:]
+
+                    # Verify the signature
+                    if bls.Verify(ap_public_key.public_bytes(encoding=serialization.Encoding.DER, format=serialization.PublicFormat.SubjectPublicKeyInfo), received_public_key, received_signature):
+                        print("Signature is valid")
+                    else:
+                        print("Signature is invalid")
+            
+            except Exception as e:
+                print(f"*** Error Processing HandShake Packet: {e}", '\n')
+                traceback.print_exc()
+                sys.exit(1)
 
 
 if __name__ == '__main__':
